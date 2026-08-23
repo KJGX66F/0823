@@ -2,78 +2,156 @@
 
 set -eu
 
+
 # ============================================================
 # Hostless + sing-box VLESS WebSocket
 # Read-only filesystem compatible
 # ============================================================
 
+
 UUID="${UUID:-}"
+
 WS_PATH="${WS_PATH:-/vless}"
 
 # Hostless 自动注入 PORT
 PORT="${PORT:-8000}"
 
+# 部署成功后可添加
+# 例如：
+# PUBLIC_HOST=xxxx.hostless.app
 PUBLIC_HOST="${PUBLIC_HOST:-}"
-
-# sing-box 内部端口
-SB_PORT="10000"
-
-# 所有运行时动态文件全部写入 /tmp
-CONFIG="/tmp/sing-box.json"
-NGINX_CONFIG="/tmp/nginx.conf"
-
-NGINX_TMP="/tmp/nginx"
-NGINX_PID="/tmp/nginx.pid"
-
-mkdir -p \
-    "$NGINX_TMP/client_body" \
-    "$NGINX_TMP/proxy" \
-    "$NGINX_TMP/fastcgi" \
-    "$NGINX_TMP/uwsgi" \
-    "$NGINX_TMP/scgi"
 
 
 # ============================================================
-# 参数检查
+# sing-box
+# ============================================================
+
+SB="/usr/local/bin/sing-box"
+
+SB_PORT="${SB_PORT:-10000}"
+
+
+# ============================================================
+# 所有运行时文件放 /tmp
+# 避免 Hostless Read-only filesystem
+# ============================================================
+
+CONFIG="/tmp/sing-box.json"
+
+NGINX_CONFIG="/tmp/nginx.conf"
+
+NGINX_PID="/tmp/nginx.pid"
+
+NGINX_TMP="/tmp/nginx"
+
+
+mkdir -p \
+    "${NGINX_TMP}/client_body" \
+    "${NGINX_TMP}/proxy" \
+    "${NGINX_TMP}/fastcgi" \
+    "${NGINX_TMP}/uwsgi" \
+    "${NGINX_TMP}/scgi"
+
+
+# ============================================================
+# 检查 UUID
 # ============================================================
 
 if [ -z "$UUID" ]; then
+
     echo ""
-    echo "ERROR: UUID environment variable is missing."
+    echo "============================================================"
+    echo "ERROR"
+    echo "============================================================"
     echo ""
+    echo "UUID environment variable is missing."
+    echo ""
+    echo "Please add:"
+    echo ""
+    echo "UUID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    echo ""
+    echo "============================================================"
+
     exit 1
 fi
 
 
+# ============================================================
+# 修正 WS Path
+# ============================================================
+
 case "$WS_PATH" in
+
     /*)
         ;;
+
     *)
         WS_PATH="/$WS_PATH"
         ;;
+
 esac
 
+
+# ============================================================
+# 检查 sing-box
+# ============================================================
+
+if [ ! -x "$SB" ]; then
+
+    echo ""
+    echo "============================================================"
+    echo "ERROR: sing-box binary not found"
+    echo "============================================================"
+    echo ""
+
+    echo "Expected:"
+    echo "$SB"
+
+    echo ""
+    echo "/usr/local/bin:"
+    echo ""
+
+    ls -lah /usr/local/bin 2>/dev/null || true
+
+    echo ""
+    echo "PATH:"
+    echo "$PATH"
+
+    echo ""
+
+    exit 1
+fi
+
+
+# ============================================================
+# 基本信息
+# ============================================================
 
 echo ""
 echo "============================================================"
 echo "             Hostless + sing-box VLESS"
 echo "============================================================"
+echo ""
 echo "PORT         : $PORT"
 echo "WS PATH      : $WS_PATH"
 echo "SINGBOX PORT : $SB_PORT"
+echo "SINGBOX BIN  : $SB"
 echo "CONFIG       : $CONFIG"
 echo "NGINX CONFIG : $NGINX_CONFIG"
 
 if [ -n "$PUBLIC_HOST" ]; then
+
     echo "PUBLIC HOST  : $PUBLIC_HOST"
+
 fi
 
+echo ""
 echo "============================================================"
 echo ""
 
 
 # ============================================================
-# sing-box 配置
+# 生成 sing-box 配置
 # ============================================================
 
 cat > "$CONFIG" <<EOF
@@ -120,22 +198,28 @@ EOF
 
 
 # ============================================================
-# Nginx 完整配置
+# 生成 Nginx 配置
 #
-# 重点：
-# 不再写 /etc/nginx/*
-# PID / temp / config 全部放 /tmp
+# 注意：
+# 不修改 /etc/nginx/
+# 所有运行时目录全部使用 /tmp
 # ============================================================
 
 cat > "$NGINX_CONFIG" <<EOF
+
 worker_processes 1;
 
 error_log /dev/stderr info;
+
 pid ${NGINX_PID};
 
+
 events {
+
     worker_connections 1024;
+
 }
+
 
 http {
 
@@ -143,29 +227,51 @@ http {
 
     default_type application/octet-stream;
 
+
+    # ========================================================
+    # Logs
+    # ========================================================
+
     access_log /dev/stdout;
 
+
+    # ========================================================
+    # 基础设置
+    # ========================================================
+
     sendfile on;
+
+    tcp_nopush on;
 
     keepalive_timeout 65;
 
 
+    # ========================================================
+    # Hostless root filesystem 是只读
+    # 所有临时目录必须使用 /tmp
+    # ========================================================
+
     client_body_temp_path ${NGINX_TMP}/client_body;
-    proxy_temp_path       ${NGINX_TMP}/proxy;
-    fastcgi_temp_path     ${NGINX_TMP}/fastcgi;
-    uwsgi_temp_path       ${NGINX_TMP}/uwsgi;
-    scgi_temp_path        ${NGINX_TMP}/scgi;
+
+    proxy_temp_path ${NGINX_TMP}/proxy;
+
+    fastcgi_temp_path ${NGINX_TMP}/fastcgi;
+
+    uwsgi_temp_path ${NGINX_TMP}/uwsgi;
+
+    scgi_temp_path ${NGINX_TMP}/scgi;
 
 
     server {
 
         listen 0.0.0.0:${PORT};
+
         server_name _;
 
 
-        # ========================================
+        # ====================================================
         # 首页
-        # ========================================
+        # ====================================================
 
         location = / {
 
@@ -174,12 +280,13 @@ http {
             add_header Cache-Control "no-store";
 
             return 200 "Hostless VLESS is running\n";
+
         }
 
 
-        # ========================================
+        # ====================================================
         # Health Check
-        # ========================================
+        # ====================================================
 
         location = /health {
 
@@ -188,12 +295,13 @@ http {
             add_header Cache-Control "no-store";
 
             return 200 '{"status":"ok"}';
+
         }
 
 
-        # ========================================
+        # ====================================================
         # VLESS WebSocket
-        # ========================================
+        # ====================================================
 
         location ${WS_PATH} {
 
@@ -201,32 +309,56 @@ http {
 
             proxy_http_version 1.1;
 
+
             proxy_set_header Upgrade \$http_upgrade;
+
             proxy_set_header Connection "upgrade";
+
 
             proxy_set_header Host \$host;
 
             proxy_set_header X-Real-IP \$remote_addr;
+
             proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+
             proxy_set_header X-Forwarded-Proto https;
 
+
             proxy_read_timeout 3600s;
+
             proxy_send_timeout 3600s;
 
+
             proxy_buffering off;
+
         }
+
     }
+
 }
 EOF
 
 
 # ============================================================
-# 检查 sing-box
+# 1. 检查 sing-box binary
 # ============================================================
 
-echo "[1/5] Checking sing-box configuration..."
+echo ""
+echo "[1/6] Checking sing-box binary..."
+echo ""
 
-sing-box check -c "$CONFIG"
+"$SB" version
+
+
+# ============================================================
+# 2. 检查 sing-box 配置
+# ============================================================
+
+echo ""
+echo "[2/6] Checking sing-box configuration..."
+echo ""
+
+"$SB" check -c "$CONFIG"
 
 echo ""
 echo "sing-box configuration OK"
@@ -234,12 +366,16 @@ echo ""
 
 
 # ============================================================
-# 检查 Nginx
+# 3. 检查 nginx
 # ============================================================
 
-echo "[2/5] Checking nginx configuration..."
+echo ""
+echo "[3/6] Checking nginx configuration..."
+echo ""
 
-nginx -t -c "$NGINX_CONFIG"
+nginx \
+    -t \
+    -c "$NGINX_CONFIG"
 
 echo ""
 echo "nginx configuration OK"
@@ -247,33 +383,48 @@ echo ""
 
 
 # ============================================================
-# 自动打印节点
+# 自动输出节点
 # ============================================================
 
 if [ -n "$PUBLIC_HOST" ]; then
 
+    # 删除可能误填的 https://
+    CLEAN_HOST="$(printf '%s' "$PUBLIC_HOST" | sed 's#^https://##;s#^http://##;s#/$##')"
+
     ENCODED_PATH="$(printf '%s' "$WS_PATH" | sed 's#/#%2F#g')"
 
-    echo ""
-    echo "============================================================"
-    echo "                       VLESS NODE"
-    echo "============================================================"
-    echo ""
-
-    echo "vless://${UUID}@${PUBLIC_HOST}:443?encryption=none&security=tls&type=ws&host=${PUBLIC_HOST}&sni=${PUBLIC_HOST}&path=${ENCODED_PATH}#Hostless-VLESS"
 
     echo ""
     echo "============================================================"
+    echo "                      VLESS NODE"
+    echo "============================================================"
+    echo ""
+
+    echo "vless://${UUID}@${CLEAN_HOST}:443?encryption=none&security=tls&type=ws&host=${CLEAN_HOST}&sni=${CLEAN_HOST}&path=${ENCODED_PATH}#Hostless-VLESS"
+
+    echo ""
+    echo "============================================================"
+    echo ""
     echo "Protocol : VLESS"
-    echo "Address  : $PUBLIC_HOST"
+    echo ""
+    echo "Address  : ${CLEAN_HOST}"
+    echo ""
     echo "Port     : 443"
-    echo "UUID     : $UUID"
+    echo ""
+    echo "UUID     : ${UUID}"
+    echo ""
     echo "Network  : WebSocket"
-    echo "Path     : $WS_PATH"
+    echo ""
+    echo "Path     : ${WS_PATH}"
+    echo ""
     echo "TLS      : enabled"
-    echo "Host     : $PUBLIC_HOST"
-    echo "SNI      : $PUBLIC_HOST"
+    echo ""
+    echo "Host     : ${CLEAN_HOST}"
+    echo ""
+    echo "SNI      : ${CLEAN_HOST}"
+    echo ""
     echo "Flow     : empty"
+    echo ""
     echo "============================================================"
     echo ""
 
@@ -281,16 +432,20 @@ else
 
     echo ""
     echo "============================================================"
-    echo "PUBLIC_HOST is not configured yet."
+    echo "PUBLIC_HOST is not configured yet"
+    echo "============================================================"
     echo ""
-    echo "This is OK for the first deployment."
+    echo "This is normal for the first deployment."
     echo ""
-    echo "After Hostless gives you a public hostname,"
-    echo "add this Environment Variable:"
+    echo "After Hostless gives you a public domain,"
+    echo "add Environment Variable:"
     echo ""
     echo "PUBLIC_HOST=your-app.hostless.app"
     echo ""
-    echo "Then redeploy to print the complete VLESS URL."
+    echo "Then redeploy."
+    echo ""
+    echo "Logs will automatically print the complete vless:// URL."
+    echo ""
     echo "============================================================"
     echo ""
 
@@ -298,34 +453,41 @@ fi
 
 
 # ============================================================
-# 启动 sing-box
+# 4. 启动 sing-box
 # ============================================================
 
-echo "[3/5] Starting sing-box..."
+echo ""
+echo "[4/6] Starting sing-box..."
+echo ""
 
-sing-box run -c "$CONFIG" &
+"$SB" run -c "$CONFIG" &
 
 SB_PID=$!
 
-sleep 1
+
+sleep 2
 
 
 if ! kill -0 "$SB_PID" 2>/dev/null; then
 
+    echo ""
     echo "ERROR: sing-box failed to start."
+    echo ""
 
     exit 1
 fi
 
 
+echo "sing-box PID: $SB_PID"
+
+
 # ============================================================
-# 启动 Nginx
-#
-# 使用 /tmp/nginx.conf
-# 不加载 /etc/nginx/http.d/default.conf
+# 5. 启动 nginx
 # ============================================================
 
-echo "[4/5] Starting nginx..."
+echo ""
+echo "[5/6] Starting nginx..."
+echo ""
 
 nginx \
     -c "$NGINX_CONFIG" \
@@ -333,12 +495,15 @@ nginx \
 
 NGINX_PID=$!
 
-sleep 1
+
+sleep 2
 
 
 if ! kill -0 "$NGINX_PID" 2>/dev/null; then
 
+    echo ""
     echo "ERROR: nginx failed to start."
+    echo ""
 
     kill "$SB_PID" 2>/dev/null || true
 
@@ -346,13 +511,28 @@ if ! kill -0 "$NGINX_PID" 2>/dev/null; then
 fi
 
 
+echo "nginx PID: $NGINX_PID"
+
+
+# ============================================================
+# 启动成功
+# ============================================================
+
 echo ""
 echo "============================================================"
-echo " Hostless VLESS started successfully"
+echo ""
+echo "        Hostless VLESS started successfully"
+echo ""
 echo "============================================================"
-echo "Public HTTP port : $PORT"
-echo "WebSocket path   : $WS_PATH"
-echo "Health check     : /health"
+echo ""
+echo "Public HTTP Port : $PORT"
+echo ""
+echo "WebSocket Path   : $WS_PATH"
+echo ""
+echo "Health Check     : /health"
+echo ""
+echo "sing-box Port    : $SB_PORT"
+echo ""
 echo "============================================================"
 echo ""
 
@@ -364,34 +544,58 @@ echo ""
 shutdown() {
 
     echo ""
-    echo "Stopping Hostless VLESS..."
+    echo "Received shutdown signal."
+    echo ""
 
-    kill "$NGINX_PID" 2>/dev/null || true
-    kill "$SB_PID" 2>/dev/null || true
+    if [ -n "${NGINX_PID:-}" ]; then
+
+        kill "$NGINX_PID" 2>/dev/null || true
+
+    fi
+
+
+    if [ -n "${SB_PID:-}" ]; then
+
+        kill "$SB_PID" 2>/dev/null || true
+
+    fi
+
 
     wait "$NGINX_PID" 2>/dev/null || true
+
     wait "$SB_PID" 2>/dev/null || true
+
+
+    echo "Stopped."
 
     exit 0
 }
 
 
-trap shutdown TERM INT
+trap shutdown TERM INT HUP
 
 
 # ============================================================
-# 监控进程
+# 6. 监控服务
 # ============================================================
 
-echo "[5/5] Service monitoring started."
+echo ""
+echo "[6/6] Service monitoring started."
 echo ""
 
 
-while true; do
+while true
+do
+
+    # ========================================================
+    # sing-box
+    # ========================================================
 
     if ! kill -0 "$SB_PID" 2>/dev/null; then
 
-        echo "ERROR: sing-box stopped."
+        echo ""
+        echo "ERROR: sing-box stopped unexpectedly."
+        echo ""
 
         kill "$NGINX_PID" 2>/dev/null || true
 
@@ -399,9 +603,15 @@ while true; do
     fi
 
 
+    # ========================================================
+    # nginx
+    # ========================================================
+
     if ! kill -0 "$NGINX_PID" 2>/dev/null; then
 
-        echo "ERROR: nginx stopped."
+        echo ""
+        echo "ERROR: nginx stopped unexpectedly."
+        echo ""
 
         kill "$SB_PID" 2>/dev/null || true
 
