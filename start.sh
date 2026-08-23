@@ -3,334 +3,67 @@
 set -eu
 
 # ============================================================
-# Shulker DevSpace + sing-box
-# VLESS Reality TCP + Hysteria2 UDP
+# Hostless + sing-box VLESS WebSocket
 # ============================================================
 
-SINGBOX_VERSION="${SINGBOX_VERSION:-1.13.19}"
+UUID="${UUID:-}"
+WS_PATH="${WS_PATH:-/vless}"
 
-# 容器内部监听端口
-VLESS_PORT="${VLESS_PORT:-4433}"
-HY2_PORT="${HY2_PORT:-8443}"
+# Hostless 会自动提供 PORT
+PORT="${PORT:-8080}"
 
-# 公网信息
-PUBLIC_IP="${PUBLIC_IP:-}"
+# Hostless 分配的公网域名
+# 例如 abc.hostless.app
+PUBLIC_HOST="${PUBLIC_HOST:-}"
 
-# 如果 Shulker 公网映射端口和容器端口不同，可单独修改
-PUBLIC_VLESS_PORT="${PUBLIC_VLESS_PORT:-$VLESS_PORT}"
-PUBLIC_HY2_PORT="${PUBLIC_HY2_PORT:-$HY2_PORT}"
+# sing-box 内部端口
+SB_PORT="10000"
 
-# Reality 参数
-REALITY_SERVER="${REALITY_SERVER:-www.microsoft.com}"
-REALITY_SERVER_PORT="${REALITY_SERVER_PORT:-443}"
-
-# HY2 自签证书 SNI
-HY2_SNI="${HY2_SNI:-www.bing.com}"
-
-# ============================================================
-# 状态目录
-#
-# 默认存在 /project 下。
-#
-# 如果创建了 Shulker Persistent Volume，
-# 推荐挂载到 /data，然后设置：
-#
-# STATE_DIR=/data/shulker-singbox
-#
-# ============================================================
-
-STATE_DIR="${STATE_DIR:-/project/.shulker-singbox}"
-
-mkdir -p "$STATE_DIR"
-
-chmod 700 "$STATE_DIR" 2>/dev/null || true
-
-STATE_FILE="$STATE_DIR/state.env"
-CONFIG="$STATE_DIR/config.json"
-
-CERT_FILE="$STATE_DIR/hy2-cert.pem"
-KEY_FILE="$STATE_DIR/hy2-key.pem"
-
-SB="$STATE_DIR/sing-box"
+CONFIG="/tmp/sing-box.json"
+NGINX_CONFIG="/etc/nginx/http.d/default.conf"
 
 
 # ============================================================
-# 安装基础依赖
+# 参数检查
 # ============================================================
 
-install_dependencies() {
-
-    NEED_INSTALL=0
-
-    command -v tar >/dev/null 2>&1 || NEED_INSTALL=1
-    command -v openssl >/dev/null 2>&1 || NEED_INSTALL=1
-
-    if ! command -v curl >/dev/null 2>&1 && \
-       ! command -v wget >/dev/null 2>&1; then
-        NEED_INSTALL=1
-    fi
-
-    if [ "$NEED_INSTALL" = "0" ]; then
-        return
-    fi
-
+if [ -z "$UUID" ]; then
     echo ""
-    echo "[1/8] Installing dependencies..."
+    echo "ERROR: UUID environment variable is missing."
     echo ""
+    exit 1
+fi
 
-    if [ "$(id -u)" = "0" ]; then
-        SUDO=""
-    else
-        SUDO="sudo"
-    fi
+case "$WS_PATH" in
+    /*)
+        ;;
+    *)
+        WS_PATH="/$WS_PATH"
+        ;;
+esac
 
-    if command -v apt-get >/dev/null 2>&1; then
 
-        $SUDO apt-get update
+echo ""
+echo "============================================================"
+echo "             Hostless + sing-box VLESS"
+echo "============================================================"
+echo "PORT        : $PORT"
+echo "WS PATH     : $WS_PATH"
+echo "SINGBOX PORT: $SB_PORT"
 
-        $SUDO apt-get install -y \
-            curl \
-            ca-certificates \
-            tar \
-            openssl
+if [ -n "$PUBLIC_HOST" ]; then
+    echo "PUBLIC HOST : $PUBLIC_HOST"
+fi
 
-    elif command -v apk >/dev/null 2>&1; then
-
-        $SUDO apk add --no-cache \
-            curl \
-            ca-certificates \
-            tar \
-            openssl
-
-    else
-
-        echo "ERROR: Unsupported Linux image."
-        echo "Please use Debian / Ubuntu / Alpine."
-        exit 1
-    fi
-}
+echo "============================================================"
+echo ""
 
 
 # ============================================================
-# 下载 sing-box
+# sing-box 配置
 # ============================================================
 
-download_singbox() {
-
-    if [ -x "$SB" ]; then
-        return
-    fi
-
-    echo ""
-    echo "[2/8] Downloading sing-box ${SINGBOX_VERSION}..."
-    echo ""
-
-    MACHINE="$(uname -m)"
-
-    case "$MACHINE" in
-
-        x86_64|amd64)
-            ARCH="amd64"
-            ;;
-
-        aarch64|arm64)
-            ARCH="arm64"
-            ;;
-
-        *)
-            echo "ERROR: Unsupported architecture: $MACHINE"
-            exit 1
-            ;;
-    esac
-
-    FILE="sing-box-${SINGBOX_VERSION}-linux-${ARCH}"
-
-    URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${FILE}.tar.gz"
-
-    TMP="/tmp/sing-box.tar.gz"
-    TMP_DIR="/tmp/sing-box-extract"
-
-    rm -rf "$TMP_DIR"
-    mkdir -p "$TMP_DIR"
-
-    if command -v curl >/dev/null 2>&1; then
-
-        curl \
-            --fail \
-            --location \
-            --retry 3 \
-            "$URL" \
-            -o "$TMP"
-
-    else
-
-        wget \
-            -O "$TMP" \
-            "$URL"
-
-    fi
-
-    tar -xzf "$TMP" -C "$TMP_DIR"
-
-    cp \
-        "$TMP_DIR/$FILE/sing-box" \
-        "$SB"
-
-    chmod +x "$SB"
-
-    rm -rf "$TMP" "$TMP_DIR"
-
-    echo ""
-    echo "sing-box installed:"
-    "$SB" version
-}
-
-
-# ============================================================
-# 读取以前生成的参数
-# ============================================================
-
-load_state() {
-
-    # 保存用户环境变量，环境变量优先于 state.env
-    ENV_UUID="${UUID:-}"
-    ENV_PRIVATE_KEY="${PRIVATE_KEY:-}"
-    ENV_PUBLIC_KEY="${PUBLIC_KEY:-}"
-    ENV_SHORT_ID="${SHORT_ID:-}"
-    ENV_HY2_PASSWORD="${HY2_PASSWORD:-}"
-
-    UUID=""
-    PRIVATE_KEY=""
-    PUBLIC_KEY=""
-    SHORT_ID=""
-    HY2_PASSWORD=""
-
-    if [ -f "$STATE_FILE" ]; then
-
-        # shellcheck disable=SC1090
-        . "$STATE_FILE"
-
-    fi
-
-    [ -n "$ENV_UUID" ] && UUID="$ENV_UUID"
-    [ -n "$ENV_PRIVATE_KEY" ] && PRIVATE_KEY="$ENV_PRIVATE_KEY"
-    [ -n "$ENV_PUBLIC_KEY" ] && PUBLIC_KEY="$ENV_PUBLIC_KEY"
-    [ -n "$ENV_SHORT_ID" ] && SHORT_ID="$ENV_SHORT_ID"
-    [ -n "$ENV_HY2_PASSWORD" ] && HY2_PASSWORD="$ENV_HY2_PASSWORD"
-}
-
-
-# ============================================================
-# 自动生成 UUID / Reality / HY2 密码
-# ============================================================
-
-generate_credentials() {
-
-    echo ""
-    echo "[3/8] Preparing credentials..."
-    echo ""
-
-    if [ -z "$UUID" ]; then
-
-        UUID="$("$SB" generate uuid)"
-
-    fi
-
-
-    if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
-
-        KEYPAIR="$("$SB" generate reality-keypair)"
-
-        PRIVATE_KEY="$(
-            printf '%s\n' "$KEYPAIR" |
-            awk -F': ' '/PrivateKey:/ {print $2}'
-        )"
-
-        PUBLIC_KEY="$(
-            printf '%s\n' "$KEYPAIR" |
-            awk -F': ' '/PublicKey:/ {print $2}'
-        )"
-
-        if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
-
-            echo "ERROR: Failed to generate Reality keypair."
-            echo "$KEYPAIR"
-            exit 1
-
-        fi
-    fi
-
-
-    if [ -z "$SHORT_ID" ]; then
-
-        # Reality short_id：8 位十六进制
-        SHORT_ID="$(openssl rand -hex 4)"
-
-    fi
-
-
-    if [ -z "$HY2_PASSWORD" ]; then
-
-        # 使用纯十六进制，方便直接放进 URL
-        HY2_PASSWORD="$(openssl rand -hex 16)"
-
-    fi
-
-
-    # 保存，避免普通重启后参数改变
-    umask 077
-
-    cat > "$STATE_FILE" <<EOF
-UUID='$UUID'
-PRIVATE_KEY='$PRIVATE_KEY'
-PUBLIC_KEY='$PUBLIC_KEY'
-SHORT_ID='$SHORT_ID'
-HY2_PASSWORD='$HY2_PASSWORD'
-EOF
-
-    chmod 600 "$STATE_FILE" 2>/dev/null || true
-}
-
-
-# ============================================================
-# HY2 自签证书
-# ============================================================
-
-generate_hy2_certificate() {
-
-    if [ -s "$CERT_FILE" ] && [ -s "$KEY_FILE" ]; then
-        return
-    fi
-
-    echo ""
-    echo "[4/8] Generating Hysteria2 TLS certificate..."
-    echo ""
-
-    openssl req \
-        -x509 \
-        -newkey rsa:2048 \
-        -nodes \
-        -sha256 \
-        -days 3650 \
-        -keyout "$KEY_FILE" \
-        -out "$CERT_FILE" \
-        -subj "/CN=${HY2_SNI}"
-
-    chmod 600 "$KEY_FILE" 2>/dev/null || true
-}
-
-
-# ============================================================
-# 生成 sing-box 配置
-# ============================================================
-
-generate_config() {
-
-    echo ""
-    echo "[5/8] Creating sing-box configuration..."
-    echo ""
-
-    cat > "$CONFIG" <<EOF
+cat > "$CONFIG" <<EOF
 {
   "log": {
     "level": "info",
@@ -338,64 +71,25 @@ generate_config() {
   },
 
   "inbounds": [
-
     {
       "type": "vless",
-      "tag": "vless-reality",
+      "tag": "vless-in",
 
-      "listen": "0.0.0.0",
-      "listen_port": ${VLESS_PORT},
-
-      "users": [
-        {
-          "name": "shulker",
-          "uuid": "${UUID}",
-          "flow": "xtls-rprx-vision"
-        }
-      ],
-
-      "tls": {
-        "enabled": true,
-        "server_name": "${REALITY_SERVER}",
-
-        "reality": {
-          "enabled": true,
-
-          "handshake": {
-            "server": "${REALITY_SERVER}",
-            "server_port": ${REALITY_SERVER_PORT}
-          },
-
-          "private_key": "${PRIVATE_KEY}",
-
-          "short_id": [
-            "${SHORT_ID}"
-          ]
-        }
-      }
-    },
-
-    {
-      "type": "hysteria2",
-      "tag": "hy2",
-
-      "listen": "0.0.0.0",
-      "listen_port": ${HY2_PORT},
+      "listen": "127.0.0.1",
+      "listen_port": ${SB_PORT},
 
       "users": [
         {
-          "name": "shulker",
-          "password": "${HY2_PASSWORD}"
+          "name": "hostless",
+          "uuid": "${UUID}"
         }
       ],
 
-      "tls": {
-        "enabled": true,
-        "certificate_path": "${CERT_FILE}",
-        "key_path": "${KEY_FILE}"
+      "transport": {
+        "type": "ws",
+        "path": "${WS_PATH}"
       }
     }
-
   ],
 
   "outbounds": [
@@ -411,144 +105,236 @@ generate_config() {
 }
 EOF
 
-    chmod 600 "$CONFIG" 2>/dev/null || true
+
+# ============================================================
+# Nginx 配置
+# ============================================================
+
+cat > "$NGINX_CONFIG" <<EOF
+server {
+
+    listen ${PORT};
+    listen [::]:${PORT};
+
+    server_name _;
+
+
+    # ========================================
+    # 首页
+    # ========================================
+
+    location = / {
+
+        default_type text/plain;
+
+        add_header Cache-Control "no-store";
+
+        return 200 "Hostless VLESS is running\n";
+    }
+
+
+    # ========================================
+    # Health Check
+    # ========================================
+
+    location = /health {
+
+        default_type application/json;
+
+        add_header Cache-Control "no-store";
+
+        return 200 '{"status":"ok"}';
+    }
+
+
+    # ========================================
+    # VLESS WebSocket
+    # ========================================
+
+    location ${WS_PATH} {
+
+        proxy_pass http://127.0.0.1:${SB_PORT};
+
+        proxy_http_version 1.1;
+
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host \$host;
+
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+
+        proxy_buffering off;
+    }
 }
+EOF
 
 
 # ============================================================
-# 检查配置
+# 检查 sing-box 配置
 # ============================================================
 
-check_config() {
+echo "[1/4] Checking sing-box configuration..."
 
+sing-box check -c "$CONFIG"
+
+echo ""
+echo "Configuration OK"
+echo ""
+
+
+# ============================================================
+# 自动输出节点
+# ============================================================
+
+if [ -n "$PUBLIC_HOST" ]; then
+
+    ENCODED_PATH="$(printf '%s' "$WS_PATH" | sed 's#/#%2F#g')"
+
+    echo "============================================================"
+    echo "                       VLESS 节点"
+    echo "============================================================"
     echo ""
-    echo "[6/8] Checking configuration..."
-    echo ""
 
-    "$SB" check -c "$CONFIG"
-
-    echo ""
-    echo "Configuration OK"
-}
-
-
-# ============================================================
-# 输出节点
-# ============================================================
-
-print_nodes() {
+    echo "vless://${UUID}@${PUBLIC_HOST}:443?encryption=none&security=tls&type=ws&host=${PUBLIC_HOST}&sni=${PUBLIC_HOST}&path=${ENCODED_PATH}#Hostless-VLESS"
 
     echo ""
     echo "============================================================"
-    echo "               Shulker sing-box 双节点"
+    echo "协议   : VLESS"
+    echo "地址   : $PUBLIC_HOST"
+    echo "端口   : 443"
+    echo "UUID   : $UUID"
+    echo "传输   : WebSocket"
+    echo "Path   : $WS_PATH"
+    echo "TLS    : 开启"
+    echo "Host   : $PUBLIC_HOST"
+    echo "SNI    : $PUBLIC_HOST"
+    echo "Flow   : 留空"
     echo "============================================================"
     echo ""
 
-    echo "UUID:"
-    echo "$UUID"
+else
+
+    echo "============================================================"
+    echo "PUBLIC_HOST 尚未设置"
+    echo ""
+    echo "第一次部署成功后，复制 Hostless 给你的域名，例如："
+    echo ""
+    echo "abc123.hostless.app"
+    echo ""
+    echo "然后 Environment 添加："
+    echo ""
+    echo "PUBLIC_HOST=abc123.hostless.app"
+    echo ""
+    echo "重新部署后 Logs 会自动打印完整 vless:// 节点。"
+    echo "============================================================"
     echo ""
 
-    echo "Reality Public Key:"
-    echo "$PUBLIC_KEY"
+fi
+
+
+# ============================================================
+# 启动 sing-box
+# ============================================================
+
+echo "[2/4] Starting sing-box..."
+
+sing-box run -c "$CONFIG" &
+
+SB_PID=$!
+
+sleep 1
+
+if ! kill -0 "$SB_PID" 2>/dev/null; then
+    echo "ERROR: sing-box failed to start."
+    exit 1
+fi
+
+
+# ============================================================
+# 启动 nginx
+# ============================================================
+
+echo "[3/4] Starting nginx..."
+
+nginx -g "daemon off;" &
+
+NGINX_PID=$!
+
+sleep 1
+
+if ! kill -0 "$NGINX_PID" 2>/dev/null; then
+    echo "ERROR: nginx failed to start."
+
+    kill "$SB_PID" 2>/dev/null || true
+
+    exit 1
+fi
+
+
+echo ""
+echo "============================================================"
+echo " Hostless VLESS started successfully"
+echo "============================================================"
+echo "HTTP PORT : $PORT"
+echo "WS PATH   : $WS_PATH"
+echo "HEALTH    : /health"
+echo "============================================================"
+echo ""
+
+
+# ============================================================
+# 优雅退出
+# ============================================================
+
+shutdown() {
+
     echo ""
+    echo "Stopping Hostless VLESS..."
 
-    echo "Reality Short ID:"
-    echo "$SHORT_ID"
-    echo ""
+    kill "$NGINX_PID" 2>/dev/null || true
+    kill "$SB_PID" 2>/dev/null || true
 
-    echo "HY2 Password:"
-    echo "$HY2_PASSWORD"
-    echo ""
+    wait "$NGINX_PID" 2>/dev/null || true
+    wait "$SB_PID" 2>/dev/null || true
 
-    echo "------------------------------------------------------------"
+    exit 0
+}
 
-    if [ -n "$PUBLIC_IP" ]; then
+trap shutdown TERM INT
 
-        VLESS_LINK="vless://${UUID}@${PUBLIC_IP}:${PUBLIC_VLESS_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SERVER}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#Shulker-VLESS-Reality"
 
-        HY2_LINK="hysteria2://${HY2_PASSWORD}@${PUBLIC_IP}:${PUBLIC_HY2_PORT}/?sni=${HY2_SNI}&insecure=1#Shulker-HY2"
+# ============================================================
+# 监控两个进程
+# ============================================================
 
-        echo ""
-        echo "【VLESS Reality】"
-        echo ""
-        echo "$VLESS_LINK"
+while true; do
 
-        echo ""
-        echo "------------------------------------------------------------"
-        echo ""
-        echo "【Hysteria2】"
-        echo ""
-        echo "$HY2_LINK"
+    if ! kill -0 "$SB_PID" 2>/dev/null; then
 
-        echo ""
-        echo "============================================================"
-        echo ""
-        echo "VLESS Reality:"
-        echo "Address    : $PUBLIC_IP"
-        echo "Port       : $PUBLIC_VLESS_PORT"
-        echo "UUID       : $UUID"
-        echo "Flow       : xtls-rprx-vision"
-        echo "Security   : reality"
-        echo "SNI        : $REALITY_SERVER"
-        echo "Public Key : $PUBLIC_KEY"
-        echo "Short ID   : $SHORT_ID"
-        echo "Fingerprint: chrome"
-        echo ""
-        echo "Hysteria2:"
-        echo "Address    : $PUBLIC_IP"
-        echo "Port       : $PUBLIC_HY2_PORT"
-        echo "Password   : $HY2_PASSWORD"
-        echo "SNI        : $HY2_SNI"
-        echo "TLS insecure: true"
-        echo ""
+        echo "ERROR: sing-box stopped."
 
-    else
+        kill "$NGINX_PID" 2>/dev/null || true
 
-        echo ""
-        echo "PUBLIC_IP 尚未设置。"
-        echo ""
-        echo "请先在 Shulker Port Manager 创建公网端口，"
-        echo "获得公网 IP 后添加："
-        echo ""
-        echo "PUBLIC_IP=你的公网IP"
-        echo ""
-        echo "然后 Restart。"
-        echo ""
-        echo "脚本会自动打印完整 VLESS + HY2 节点。"
-        echo ""
-
+        exit 1
     fi
 
-    echo "============================================================"
-}
+
+    if ! kill -0 "$NGINX_PID" 2>/dev/null; then
+
+        echo "ERROR: nginx stopped."
+
+        kill "$SB_PID" 2>/dev/null || true
+
+        exit 1
+    fi
 
 
-# ============================================================
-# Main
-# ============================================================
+    sleep 10
 
-install_dependencies
-
-download_singbox
-
-load_state
-
-generate_credentials
-
-generate_hy2_certificate
-
-generate_config
-
-check_config
-
-print_nodes
-
-echo ""
-echo "[7/8] VLESS TCP port : $VLESS_PORT"
-echo "[7/8] HY2 UDP port   : $HY2_PORT"
-echo ""
-
-echo "[8/8] Starting sing-box..."
-echo ""
-
-exec "$SB" run -c "$CONFIG"
+done
