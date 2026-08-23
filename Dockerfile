@@ -5,8 +5,10 @@ ARG SINGBOX_VERSION=1.13.19
 RUN apk add --no-cache \
     curl \
     tar \
-    ca-certificates
+    ca-certificates \
+    nodejs
 
+# Alpine 使用 musl 版本 sing-box
 RUN set -eux; \
     ARCH="$(uname -m)"; \
     case "$ARCH" in \
@@ -16,18 +18,19 @@ RUN set -eux; \
     esac; \
     FILE="sing-box-${SINGBOX_VERSION}-linux-${SB_ARCH}"; \
     URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${FILE}.tar.gz"; \
-    echo "Downloading: ${URL}"; \
     curl -fL --retry 3 --retry-delay 2 \
-      "${URL}" \
+      "$URL" \
       -o /tmp/sing-box.tar.gz; \
     mkdir -p /tmp/sing-box; \
     tar -xzf /tmp/sing-box.tar.gz -C /tmp/sing-box; \
     cp "/tmp/sing-box/${FILE}/sing-box" /usr/local/bin/sing-box; \
     chmod 755 /usr/local/bin/sing-box; \
     /usr/local/bin/sing-box version; \
+    node --version; \
     rm -rf /tmp/sing-box /tmp/sing-box.tar.gz
 
 COPY start.sh /start.sh
+COPY proxy.js /proxy.js
 
 RUN chmod 755 /start.sh
 
