@@ -4,7 +4,13 @@ set -eu
 
 UUID="${UUID:-}"
 WS_PATH="${WS_PATH:-/vless}"
+
+# Hostless 自动提供
 PORT="${PORT:-8000}"
+
+# Node -> sing-box 内部端口
+SB_PORT="${SB_PORT:-10000}"
+
 PUBLIC_HOST="${PUBLIC_HOST:-}"
 
 SINGBOX="/usr/local/bin/sing-box"
@@ -12,63 +18,27 @@ CONFIG="/tmp/sing-box.json"
 
 
 # ============================================================
-# UUID
+# 参数检查
 # ============================================================
 
 if [ -z "$UUID" ]; then
-    echo ""
     echo "ERROR: UUID environment variable is missing."
-    echo ""
-    echo "Please add:"
-    echo "UUID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-    echo ""
     exit 1
 fi
-
-
-# ============================================================
-# WebSocket Path
-# ============================================================
 
 case "$WS_PATH" in
     /*) ;;
     *) WS_PATH="/$WS_PATH" ;;
 esac
 
-
-# ============================================================
-# Check sing-box
-# ============================================================
-
 if [ ! -x "$SINGBOX" ]; then
-    echo ""
-    echo "ERROR: sing-box not found:"
-    echo "$SINGBOX"
-    echo ""
-    ls -lah /usr/local/bin 2>/dev/null || true
+    echo "ERROR: sing-box not found: $SINGBOX"
     exit 1
 fi
 
 
-echo ""
-echo "============================================================"
-echo "       Hostless + sing-box VLESS WebSocket"
-echo "============================================================"
-echo "PORT        : $PORT"
-echo "WS PATH     : $WS_PATH"
-echo "SINGBOX BIN : $SINGBOX"
-echo "CONFIG      : $CONFIG"
-
-if [ -n "$PUBLIC_HOST" ]; then
-    echo "PUBLIC HOST : $PUBLIC_HOST"
-fi
-
-echo "============================================================"
-echo ""
-
-
 # ============================================================
-# sing-box config
+# sing-box 配置
 # ============================================================
 
 cat > "$CONFIG" <<EOF
@@ -83,8 +53,8 @@ cat > "$CONFIG" <<EOF
       "type": "vless",
       "tag": "vless-in",
 
-      "listen": "0.0.0.0",
-      "listen_port": ${PORT},
+      "listen": "127.0.0.1",
+      "listen_port": ${SB_PORT},
 
       "users": [
         {
@@ -114,34 +84,35 @@ cat > "$CONFIG" <<EOF
 EOF
 
 
+echo ""
+echo "============================================================"
+echo " Hostless VLESS"
+echo "============================================================"
+echo "Public PORT : $PORT"
+echo "WS PATH     : $WS_PATH"
+echo "sing-box    : 127.0.0.1:$SB_PORT"
+echo "============================================================"
+echo ""
+
+
 # ============================================================
-# STEP 1
+# 检查配置
 # ============================================================
 
-echo "[1/3] Checking sing-box binary..."
-echo ""
+echo "[1/4] Checking sing-box..."
 
 "$SINGBOX" version
 
 echo ""
-
-
-# ============================================================
-# STEP 2
-# ============================================================
-
-echo "[2/3] Checking configuration..."
-echo ""
+echo "[2/4] Checking configuration..."
 
 "$SINGBOX" check -c "$CONFIG"
 
-echo ""
 echo "Configuration OK"
-echo ""
 
 
 # ============================================================
-# Print node
+# 输出节点
 # ============================================================
 
 if [ -n "$PUBLIC_HOST" ]; then
@@ -161,49 +132,108 @@ if [ -n "$PUBLIC_HOST" ]; then
 
     echo ""
     echo "============================================================"
-    echo "                     VLESS NODE"
+    echo "VLESS NODE"
     echo "============================================================"
     echo ""
     echo "vless://${UUID}@${CLEAN_HOST}:443?encryption=none&security=tls&type=ws&host=${CLEAN_HOST}&sni=${CLEAN_HOST}&path=${ENCODED_PATH}#Hostless-VLESS"
     echo ""
-    echo "============================================================"
-    echo "Address : ${CLEAN_HOST}"
+    echo "Address : $CLEAN_HOST"
     echo "Port    : 443"
-    echo "UUID    : ${UUID}"
+    echo "UUID    : $UUID"
     echo "Network : ws"
-    echo "Path    : ${WS_PATH}"
+    echo "Path    : $WS_PATH"
     echo "TLS     : enabled"
-    echo "SNI     : ${CLEAN_HOST}"
+    echo "SNI     : $CLEAN_HOST"
     echo "============================================================"
-    echo ""
-
-else
-
-    echo ""
-    echo "============================================================"
-    echo "PUBLIC_HOST not configured yet."
-    echo ""
-    echo "First deployment is OK without it."
-    echo ""
-    echo "After Hostless gives you a domain, add:"
-    echo ""
-    echo "PUBLIC_HOST=xxxx.hostless.app"
-    echo ""
-    echo "Then redeploy."
-    echo "============================================================"
-    echo ""
 
 fi
 
 
 # ============================================================
-# STEP 3
+# 启动 sing-box
 # ============================================================
 
-echo "[3/3] Starting sing-box..."
 echo ""
-echo "Listening : 0.0.0.0:${PORT}"
-echo "WS Path   : ${WS_PATH}"
+echo "[3/4] Starting sing-box..."
+
+"$SINGBOX" run -c "$CONFIG" &
+
+SB_PID=$!
+
+sleep 1
+
+if ! kill -0 "$SB_PID" 2>/dev/null; then
+    echo "ERROR: sing-box failed."
+    exit 1
+fi
+
+
+# ============================================================
+# 启动 HTTP / WebSocket 前门
+# ============================================================
+
+echo ""
+echo "[4/4] Starting HTTP/WebSocket frontend..."
+
+export PORT
+export SB_PORT
+export WS_PATH
+
+node /proxy.js &
+
+NODE_PID=$!
+
+sleep 1
+
+if ! kill -0 "$NODE_PID" 2>/dev/null; then
+    echo "ERROR: HTTP frontend failed."
+    kill "$SB_PID" 2>/dev/null || true
+    exit 1
+fi
+
+
+echo ""
+echo "============================================================"
+echo " Hostless VLESS started successfully"
+echo "============================================================"
+echo "HTTP       : 0.0.0.0:$PORT"
+echo "Health     : /health"
+echo "WebSocket  : $WS_PATH"
+echo "sing-box   : 127.0.0.1:$SB_PORT"
+echo "============================================================"
 echo ""
 
-exec "$SINGBOX" run -c "$CONFIG"
+
+shutdown() {
+
+    echo "Stopping..."
+
+    kill "$NODE_PID" 2>/dev/null || true
+    kill "$SB_PID" 2>/dev/null || true
+
+    wait "$NODE_PID" 2>/dev/null || true
+    wait "$SB_PID" 2>/dev/null || true
+
+    exit 0
+}
+
+trap shutdown TERM INT HUP
+
+
+while true
+do
+
+    if ! kill -0 "$SB_PID" 2>/dev/null; then
+        echo "ERROR: sing-box stopped."
+        kill "$NODE_PID" 2>/dev/null || true
+        exit 1
+    fi
+
+    if ! kill -0 "$NODE_PID" 2>/dev/null; then
+        echo "ERROR: HTTP frontend stopped."
+        kill "$SB_PID" 2>/dev/null || true
+        exit 1
+    fi
+
+    sleep 10
+done
