@@ -7,7 +7,6 @@ RUN apk add --no-cache \
     tar \
     ca-certificates
 
-# Alpine 使用 musl 版本 sing-box
 RUN set -eux; \
     ARCH="$(uname -m)"; \
     case "$ARCH" in \
