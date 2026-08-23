@@ -9,11 +9,6 @@ RUN apk add --no-cache \
     ca-certificates \
     tzdata
 
-# ============================================================
-# 安装 sing-box MUSL 版本
-# Alpine 必须使用 -musl 构建
-# ============================================================
-
 RUN set -eux; \
     ARCH="$(uname -m)"; \
     case "$ARCH" in \
@@ -24,20 +19,19 @@ RUN set -eux; \
     FILE="sing-box-${SINGBOX_VERSION}-linux-${SB_ARCH}"; \
     URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${FILE}.tar.gz"; \
     echo "Downloading: $URL"; \
-    curl -fL \
-      --retry 3 \
-      --retry-delay 2 \
+    curl -fL --retry 3 --retry-delay 2 \
       "$URL" \
       -o /tmp/sing-box.tar.gz; \
     mkdir -p /tmp/sing-box; \
     tar -xzf /tmp/sing-box.tar.gz -C /tmp/sing-box; \
     cp "/tmp/sing-box/${FILE}/sing-box" /usr/local/bin/sing-box; \
     chmod 755 /usr/local/bin/sing-box; \
-    echo "Testing sing-box..."; \
     /usr/local/bin/sing-box version; \
+    test -x /usr/sbin/nginx; \
+    /usr/sbin/nginx -v; \
     rm -rf /tmp/sing-box /tmp/sing-box.tar.gz
 
-ENV PATH="/usr/local/bin:/usr/bin:/bin"
+ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 COPY start.sh /start.sh
 
